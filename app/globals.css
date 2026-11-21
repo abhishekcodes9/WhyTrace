@@ -1,0 +1,502 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+/* ─────────────────────────────────────────────────────────────
+   WHYTRACE — Classic Detective Noir design tokens
+   Single source of truth for colour, type, depth and motion.
+   ───────────────────────────────────────────────────────────── */
+@theme {
+  --color-deep-charcoal: #17120f;
+  --color-dark-walnut: #241b16;
+  --color-leather-brown: #33251c;
+  --color-antique-paper: #e8dcc5;
+  --color-brass-gold: #c49a58;
+  --color-oxblood-red: #8e3830;
+  --color-warm-cream: #f3ebdd;
+
+  --color-surface: #17120f;
+  --color-on-surface: #f3ebdd;
+  --color-surface-container-low: #1e1713;
+  --color-surface-container: #241b16;
+  --color-surface-container-high: #33251c;
+  --color-surface-container-highest: #3f2f25;
+  --color-on-surface-variant: #d1c5af;
+  --color-primary: #c49a58;
+  --color-on-primary: #17120f;
+  --color-primary-container: #432c00;
+  --color-on-primary-container: #ffddae;
+  --color-secondary: #8e3830;
+  --color-on-secondary: #f3ebdd;
+  --color-secondary-container: #5f1511;
+  --color-on-secondary-container: #ffdad5;
+  --color-paper: #e8dcc5;
+  --color-on-paper: #17120f;
+  --color-paper-muted: #665e4b;
+  --color-outline: #807567;
+  --color-outline-variant: #3f2f25;
+  --color-success: #3e6b4c;
+  --color-on-success: #f3ebdd;
+  --color-warning: #c49a58;
+  --color-error: #8e3830;
+  --color-on-error: #f3ebdd;
+
+  --font-display: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
+  --font-headline: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
+  --font-body: var(--font-inter), "Inter", system-ui, sans-serif;
+  --font-title: var(--font-inter), "Inter", system-ui, sans-serif;
+  --font-label: var(--font-inter), "Inter", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+
+  --text-display-lg: 64px;
+  --text-display-lg--line-height: 70px;
+  --text-display-lg--letter-spacing: -0.75px;
+  --text-display-md: 48px;
+  --text-display-md--line-height: 54px;
+  --text-display-md--letter-spacing: -0.5px;
+  --text-headline-lg: 36px;
+  --text-headline-lg--line-height: 44px;
+  --text-headline-lg--letter-spacing: -0.25px;
+  --text-headline-md: 28px;
+  --text-headline-md--line-height: 34px;
+  --text-headline-sm: 22px;
+  --text-headline-sm--line-height: 28px;
+  --text-title-lg: 20px;
+  --text-title-lg--line-height: 28px;
+  --text-title-md: 16px;
+  --text-title-md--line-height: 24px;
+  --text-title-sm: 14px;
+  --text-title-sm--line-height: 20px;
+  --text-body-lg: 18px;
+  --text-body-lg--line-height: 28px;
+  --text-body-md: 15px;
+  --text-body-md--line-height: 24px;
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 20px;
+  --text-label-lg: 13px;
+  --text-label-lg--line-height: 18px;
+  --text-label-lg--letter-spacing: 0.8px;
+  --text-label-md: 12px;
+  --text-label-md--line-height: 16px;
+  --text-label-md--letter-spacing: 0.6px;
+  --text-label-sm: 11px;
+  --text-label-sm--line-height: 14px;
+  --text-label-sm--letter-spacing: 0.5px;
+  --text-mono-md: 13px;
+  --text-mono-md--line-height: 20px;
+  --text-mono-sm: 12px;
+  --text-mono-sm--line-height: 18px;
+
+  --radius-none: 0px;
+  --radius-sm: 4px;
+  --radius-DEFAULT: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --ease-state: cubic-bezier(0.2, 0, 0, 1);
+  --ease-card: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-dossier: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-thread: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+:root {
+  color-scheme: dark;
+  --noir-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.055'/%3E%3C/svg%3E");
+  --corkboard: radial-gradient(circle at 18% 22%, rgba(196, 154, 88, 0.15), transparent 46%),
+    radial-gradient(circle at 82% 74%, rgba(196, 154, 88, 0.08), transparent 52%),
+    radial-gradient(circle at 1px 1px, rgba(232, 220, 197, 0.09) 1px, transparent 0);
+}
+
+* {
+  border-color: var(--color-outline-variant);
+}
+
+html {
+  background: var(--color-surface);
+  scrollbar-color: var(--color-leather-brown) var(--color-surface);
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-on-surface);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-leather-brown);
+  border: 2px solid var(--color-surface);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-outline);
+}
+
+/* ── Architectural surfaces ─────────────────────────────────── */
+.noir-grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: var(--noir-grain);
+  mix-blend-mode: overlay;
+  z-index: 1;
+}
+
+.walnut-panel {
+  background:
+    linear-gradient(145deg, rgba(63, 47, 37, 0.38), transparent 40%),
+    linear-gradient(180deg, var(--color-dark-walnut), var(--color-surface-container-low));
+  border: 1px solid var(--color-outline-variant);
+}
+
+.leather-texture {
+  background-color: var(--color-leather-brown);
+  background-image:
+    radial-gradient(circle at 22% 18%, rgba(196, 154, 88, 0.12), transparent 52%),
+    radial-gradient(circle at 1px 1px, rgba(232, 220, 197, 0.05) 1px, transparent 0);
+  background-size: 100% 100%, 18px 18px;
+}
+
+.corkboard {
+  background-color: #3a291d;
+  background-image: var(--corkboard);
+  background-size: 100% 100%, 100% 100%, 22px 22px;
+  box-shadow:
+    inset 0 0 0 3px rgba(23, 18, 15, 0.75),
+    inset 0 0 60px rgba(23, 18, 15, 0.6);
+}
+
+.paper-sheet {
+  background-color: var(--color-paper);
+  background-image:
+    radial-gradient(ellipse at 12% 8%, rgba(255, 255, 255, 0.28), transparent 55%),
+    radial-gradient(ellipse at 90% 96%, rgba(102, 94, 75, 0.16), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(102, 94, 75, 0.025) 0 1px, transparent 1px 4px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    0 18px 40px -26px rgba(0, 0, 0, 0.85);
+}
+
+.paper-inset {
+  background: rgba(243, 235, 221, 0.55);
+  border: 1px solid rgba(102, 94, 75, 0.25);
+}
+
+.rule-label {
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ── Lamp light and magnifier ───────────────────────────────── */
+.lamp-wash {
+  background:
+    radial-gradient(760px circle at 50% 12%, rgba(196, 154, 88, 0.11), transparent 72%),
+    radial-gradient(560px circle at 82% 74%, rgba(142, 56, 48, 0.07), transparent 70%);
+}
+
+.spotlight-surface {
+  position: relative;
+  isolation: isolate;
+}
+.spotlight-surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(
+    420px circle at var(--spot-x, 68%) var(--spot-y, 42%),
+    rgba(196, 154, 88, 0.17),
+    rgba(23, 18, 15, 0.12) 48%,
+    rgba(23, 18, 15, 0.62) 100%
+  );
+  transition: opacity 300ms var(--ease-state);
+}
+@media (max-width: 1023px) {
+  .spotlight-surface::after {
+    background: radial-gradient(340px circle at var(--spot-x, 50%) var(--spot-y, 42%), rgba(196, 154, 88, 0.13), rgba(23, 18, 15, 0.28) 62%, rgba(23, 18, 15, 0.5) 100%);
+  }
+}
+
+.magnifier-lens {
+  position: fixed;
+  z-index: 30;
+  width: 142px;
+  height: 142px;
+  border-radius: 9999px;
+  border: 1px solid rgba(196, 154, 88, 0.55);
+  box-shadow:
+    inset 0 0 30px rgba(196, 154, 88, 0.13),
+    0 0 26px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: opacity 180ms var(--ease-state);
+  backdrop-filter: saturate(1.08);
+}
+.magnifier-lens::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: inherit;
+  border: 1px solid rgba(196, 154, 88, 0.16);
+}
+
+/* ── Red thread & pin details ───────────────────────────────── */
+.thread-edge .react-flow__edge-path {
+  stroke: var(--color-oxblood-red);
+  stroke-width: 1.8;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.5));
+}
+.thread-edge.is-highlighted .react-flow__edge-path {
+  stroke: #b84d43;
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 5px rgba(142, 56, 48, 0.55));
+}
+.thread-edge .react-flow__edge-path {
+  stroke-dasharray: 6 4;
+  animation: thread-draw 900ms var(--ease-thread) both;
+}
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 5 5;
+  animation: thread-march 1.2s linear infinite;
+}
+@keyframes thread-draw {
+  from {
+    stroke-dashoffset: 220;
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+@keyframes thread-march {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.brass-pin {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 35% 30%, #f6d99b, #c49a58 42%, #7a5a2d 100%);
+  border: 1px solid rgba(23, 18, 15, 0.8);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.6),
+    0 0 8px rgba(196, 154, 88, 0.22);
+}
+
+.stamp {
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  transform: rotate(-2deg);
+  letter-spacing: 0.14em;
+}
+
+/* ── Scan, reveal, loader ───────────────────────────────────── */
+.scan-beam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(196, 154, 88, 0.55), transparent);
+  animation: scan-sweep 1.7s var(--ease-state) infinite;
+}
+@keyframes scan-sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+.scanline {
+  position: relative;
+  overflow: hidden;
+}
+.scanline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(196, 154, 88, 0.07) 48%, transparent 100%);
+  animation: scanline-fall 2.4s linear infinite;
+  pointer-events: none;
+}
+@keyframes scanline-fall {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, rgba(63, 47, 37, 0.35) 0%, rgba(196, 154, 88, 0.12) 50%, rgba(63, 47, 37, 0.35) 100%);
+  background-size: 220% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+@keyframes shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+.ripple {
+  position: absolute;
+  inset: -6px;
+  border-radius: inherit;
+  border: 1px solid rgba(196, 154, 88, 0.65);
+  animation: ripple-out 560ms var(--ease-card) forwards;
+  pointer-events: none;
+}
+@keyframes ripple-out {
+  from {
+    opacity: 0.8;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.045);
+  }
+}
+
+/* ── Dossier editorial content ──────────────────────────────── */
+.dossier-body p + p {
+  margin-top: 0.65rem;
+}
+.dossier-body strong {
+  font-weight: 600;
+}
+.dossier-body code,
+.inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 0.08rem 0.28rem;
+  border-radius: 2px;
+  background: rgba(102, 94, 75, 0.14);
+}
+
+.diff-line {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-add {
+  color: #2f5a3c;
+  background: rgba(62, 107, 76, 0.1);
+}
+.diff-del {
+  color: #7f2e28;
+  background: rgba(142, 56, 48, 0.09);
+}
+
+/* ── React Flow theme ───────────────────────────────────────── */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-node-border-radius: 6px;
+  --xy-edge-stroke: var(--color-oxblood-red);
+  --xy-edge-stroke-width: 1.8;
+  --xy-connectionline-stroke: var(--color-primary);
+  --xy-selection-background-color: rgba(196, 154, 88, 0.08);
+  --xy-selection-border: 1px dashed rgba(196, 154, 88, 0.5);
+}
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-outline-variant);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--color-surface-container);
+  border-bottom: 1px solid var(--color-outline-variant);
+  color: var(--color-on-surface);
+  fill: var(--color-on-surface);
+  width: 30px;
+  height: 30px;
+}
+.react-flow__controls-button:hover {
+  background: var(--color-surface-container-high);
+}
+.react-flow__minimap {
+  background: var(--color-surface-container-low) !important;
+  border: 1px solid var(--color-outline-variant);
+  border-radius: 6px;
+}
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+.react-flow__node {
+  cursor: grab;
+}
+.react-flow__node:active {
+  cursor: grabbing;
+}
+.react-flow__node.selected .evidence-node-card {
+  border-color: var(--color-primary);
+  box-shadow:
+    0 0 0 1px var(--color-primary),
+    0 0 22px rgba(196, 154, 88, 0.24);
+}
+.react-flow__node.selected .evidence-node-pin {
+  box-shadow:
+    0 0 0 5px rgba(196, 154, 88, 0.12),
+    0 0 16px rgba(196, 154, 88, 0.45);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .scan-beam,
+  .scanline::after,
+  .shimmer,
+  .thread-edge .react-flow__edge-path {
+    animation: none !important;
+  }
+  .spotlight-surface::after {
+    background: radial-gradient(600px circle at 60% 40%, rgba(196, 154, 88, 0.1), transparent 70%);
+  }
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+}
