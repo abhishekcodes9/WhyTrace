@@ -166,6 +166,22 @@ export async function readCounts(repoId: string): Promise<GraphCounts> {
   };
 }
 
+export async function readRelationshipCounts(repoId: string, runId?: string): Promise<Record<string, number>> {
+  const runFilter = runId ? "AND r.lastIngestedRunId = $runId" : "";
+  const params: Record<string, string> = { repoId };
+  if (runId) params.runId = runId;
+  const rows = await readQuery<Record<string, unknown>>(
+    `MATCH (n)-[r]->(m)
+     WHERE ((n:Repository AND n.id = $repoId) OR (n.repositoryId = $repoId AND NOT n:Investigation))
+       AND m.repositoryId = $repoId AND NOT m:Investigation
+       ${runFilter}
+     RETURN type(r) AS type, count(r) AS count
+     ORDER BY type`,
+    params,
+  );
+  return Object.fromEntries(rows.map((row) => [asString(row.type), asNumber(row.count)]));
+}
+
 export async function listRecentRepositories(limit = 12): Promise<RepositorySummary[]> {
   await ensureSchema();
   const rows = await readQuery<Record<string, unknown>>(

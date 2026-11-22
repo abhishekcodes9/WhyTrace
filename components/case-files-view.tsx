@@ -12,6 +12,7 @@ import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/states";
 import { Modal } from "@/components/ui/modal";
 import { cn, formatDate, truncate } from "@/lib/utils";
+import { resolveCaseStatus } from "@/lib/report-status";
 
 export function CaseFilesView() {
   const [cases, setCases] = useState<CaseFileSummary[]>([]);
@@ -119,7 +120,8 @@ export function CaseFilesView() {
         {cases.length ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {cases.map((item, index) => {
-              const paper = index === 0 && item.status === "answered";
+              const status = resolveCaseStatus(item.status, item.synthesisStatus);
+              const paper = index === 0 && status === "answered";
               const high = item.confidence >= 70;
               return (
                 <article
@@ -141,10 +143,14 @@ export function CaseFilesView() {
                       {truncate(item.summary, 240)}
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {item.status === "answered" ? (
+                      {status === "answered" ? (
                         <Badge variant={paper ? "paper" : "success"}><CheckCircle2 className="h-3 w-3" /> Answered</Badge>
+                      ) : status === "evidence_only" ? (
+                        <Badge variant={paper ? "paper" : "brass"}><Database className="h-3 w-3" /> Evidence only</Badge>
+                      ) : status === "synthesis_not_configured" ? (
+                        <Badge variant={paper ? "paper" : "neutral"}><Database className="h-3 w-3" /> AI not configured</Badge>
                       ) : (
-                        <Badge variant={paper ? "paper" : "danger"}><AlertTriangle className="h-3 w-3" /> Abstained</Badge>
+                        <Badge variant={paper ? "paper" : "danger"}><AlertTriangle className="h-3 w-3" /> Insufficient</Badge>
                       )}
                       <Badge variant={paper ? "paper" : high ? "brass" : "neutral"}>{item.confidence}% confidence</Badge>
                       <Badge variant={paper ? "paper" : "outline"}>{item.evidenceCount} evidence</Badge>

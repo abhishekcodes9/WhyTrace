@@ -136,39 +136,34 @@ function fallbackSynthesis(
   message: string,
   status: "unavailable" | "not_configured",
 ): SynthesisResult {
-  const quoteCandidates = evidence.filter((item) =>
-    ["pullRequest", "issue", "designDocument", "decision", "commit", "discussion"].includes(item.kind),
-  ).slice(0, 3);
-  const documentedRationale: Claim[] = quoteCandidates
-    .filter((item) => item.excerpt.trim().length > 0)
-    .map((item) => ({
-      text: `Retrieved from ${item.reference}: “${item.excerpt.slice(0, 420)}”`,
-      evidenceIds: [item.id],
-    }));
-  const citations = citationsFor(documentedRationale, evidence);
-  const summary = evidence.length
-    ? `AI synthesis is ${status === "not_configured" ? "not configured" : "currently unavailable"}. WHYTRACE retrieved ${evidence.length} repository record${evidence.length === 1 ? "" : "s"} related to this question. The quoted records below are shown without AI interpretation.`
-    : ABSTENTION;
+  const records = `${evidence.length} repository record${evidence.length === 1 ? "" : "s"}`;
+  const summary = status === "not_configured"
+    ? `Evidence retrieved — AI interpretation unavailable. Gemini is not configured, so WHYTRACE retrieved ${records} but generated no historical explanation.`
+    : `Evidence retrieved — AI interpretation unavailable. WHYTRACE retrieved ${records} related to this question, but Gemini could not generate a historical explanation.`;
   return {
     summary,
-    documentedRationale,
+    // Raw excerpts are preserved in `evidence`, but they are not promoted to
+    // documented rationale. A commit message only becomes rationale when a
+    // validated interpretation explicitly establishes that reasoning.
+    documentedRationale: [],
     technicalObservations: [],
     inferences: [],
     uncertainties: [
       status === "not_configured"
         ? "GEMINI_API_KEY is not configured, so no AI synthesis was attempted."
         : `Gemini synthesis was unavailable: ${message}`,
-      "No interpretive conclusion should be drawn beyond the retrieved quotes.",
+      "The report contains retrieved source material only; no documented rationale, technical interpretation or inference was generated.",
+      "No historical conclusion should be drawn from raw excerpts without an interpretation.",
     ],
-    citations,
+    citations: [],
     synthesis: {
       provider: "gemini",
       status,
       model: status === "not_configured" ? null : serverEnv.geminiModel,
       message:
         status === "not_configured"
-          ? "Gemini is not configured. A deterministic quote-only report was produced."
-          : `Gemini could not complete synthesis. A deterministic quote-only report was produced. ${message}`,
+          ? "Gemini is not configured. Retrieved evidence is shown without AI interpretation."
+          : `Gemini could not complete synthesis. Retrieved evidence is shown without AI interpretation. ${message}`,
     },
     rejectedClaimCount: 0,
   };
@@ -194,7 +189,7 @@ export async function synthesizeInvestigation(input: {
         provider: "gemini",
         status: "unavailable",
         model: null,
-        message: "Synthesis skipped because graph retrieval returned no evidence.",
+        message: "No evidence was retrieved, so no AI interpretation was attempted.",
       },
       rejectedClaimCount: 0,
     };

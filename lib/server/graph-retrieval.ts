@@ -1,4 +1,4 @@
-import type { EvidenceGraph, EvidenceItem, GraphEdge, GraphNode, NodeKind, SourceKind } from "@/lib/types";
+import type { EvidenceGraph, EvidenceItem, GraphEdge, GraphNode, InvestigationStageEvent, NodeKind, SourceKind } from "@/lib/types";
 import { escapeLucene, keywords as extractKeywords, safeJson, truncate } from "@/lib/utils";
 import { readQuery } from "./neo4j";
 import { int as neo4jInt } from "neo4j-driver";
@@ -487,6 +487,7 @@ async function expand(seedIdsList: string[], repoId: string): Promise<{ nodes: R
      LIMIT 700`,
     { ids: seedIdsList, repoId },
   );
+  for (const id of seedIdsList) addDistance(id, 0);
   const hop1Ids = new Set<string>();
   for (const record of hop1) {
     pushEdge(record);
@@ -496,8 +497,6 @@ async function expand(seedIdsList: string[], repoId: string): Promise<{ nodes: R
       addDistance(neighborId, 1);
     }
   }
-  for (const id of seedIdsList) addDistance(id, 0);
-
   const expansionFrontier = [...hop1Ids].filter((id) => id.includes(":pull:") || id.includes(":issue:") || id.includes(":commit:") || id.includes(":decision:") || id.includes(":doc:") || id.includes(":discussion:")).slice(0, 12);
   if (expansionFrontier.length) {
     const hop2 = await readQuery<Record<string, unknown>>(
@@ -579,24 +578,57 @@ export async function retrieveEvidence(
   repoId: string,
   question: string,
   focus?: { type: string; value: string },
+  options: { onProgress?: (event: InvestigationStageEvent) => void } = {},
 ): Promise<RetrievalResult> {
   const warnings: string[] = [];
+  const progress = options.onProgress ?? (() => undefined);
+  const stage = (
+    id: "graph" | "connections" | "evidence",
+    number: number,
+    name: string,
+    status: InvestigationStageEvent["status"],
+    message: string,
+    counts?: InvestigationStageEvent["counts"],
+    detail?: string,
+  ) => progress({
+    type: "stage", stage: id, stageNumber: number, stageName: name,
+    status, message, counts, detail, at: new Date().toISOString(),
+  });
+
   const plan = parseQueryPlan(question);
   const seed = await seedIds(plan, repoId, focus);
+  stage(
+    "graph", 2, "Accessing the Evidence Graph", "completed",
+    seed.ids.length
+      ? `Neo4j returned ${seed.ids.length} seed record${seed.ids.length === 1 ? "" : "s"} for this question.`
+      : "Neo4j returned no seed records for this question.",
+    { seeds: seed.ids.length },
+  );
   if (!seed.ids.length) {
+    stage("connections", 3, "Tracing Evidence Connections", "skipped", "No seed records were available to expand.", undefined, "Graph expansion was not applicable.");
+    stage("evidence", 4, "Examining Historical Evidence", "skipped", "There were no records to rank or validate.", undefined, "Evidence examination was not applicable.");
     return { evidence: [], graph: { nodes: [], edges: [] }, plan, seedCount: 0, candidateCount: 0, warnings };
   }
 
   const mobileSeedIds = seed.ids
     .sort((a, b) => (seed.scores.get(b) ?? 0) - (seed.scores.get(a) ?? 0))
     .slice(0, 24);
+  stage("connections", 3, "Tracing Evidence Connections", "active", "Traversing Neo4j relationships from the seed records.", { seeds: mobileSeedIds.length });
   let expanded: Awaited<ReturnType<typeof expand>>;
   try {
     expanded = await expand(mobileSeedIds, repoId);
   } catch (error) {
     warnings.push(error instanceof Error ? error.message : "Graph expansion failed.");
+    stage("connections", 3, "Tracing Evidence Connections", "failed", warnings[warnings.length - 1]);
+    stage("evidence", 4, "Examining Historical Evidence", "skipped", "Evidence ranking could not run because graph expansion failed.");
     return { evidence: [], graph: { nodes: [], edges: [] }, plan, seedCount: mobileSeedIds.length, candidateCount: 0, warnings };
   }
+  stage(
+    "connections", 3, "Tracing Evidence Connections", "completed",
+    `Traced ${expanded.nodes.length} candidate records and ${expanded.edges.length} relationships.`,
+    { records: expanded.nodes.length, relationships: expanded.edges.length, seeds: mobileSeedIds.length },
+  );
+  stage("evidence", 4, "Examining Historical Evidence", "active", "Ranking records and checking evidence directness.");
 
   const directSet = new Set(mobileSeedIds);
   const scored = expanded.nodes.map((node) => {
@@ -657,6 +689,14 @@ export async function retrieveEvidence(
       type: edge.type,
       label: edge.type.replaceAll("_", " "),
     }));
+
+  const directCount = evidence.filter((item) => item.direct).length;
+  stage(
+    "evidence", 4, "Examining Historical Evidence", "completed",
+    `Ranked ${evidence.length} evidence record${evidence.length === 1 ? "" : "s"}; ${directCount} directly matched the inquiry.`,
+    { records: evidence.length, relationships: graphEdges.length, candidates: expanded.nodes.length },
+    warnings.length ? warnings.join(" · ") : undefined,
+  );
 
   return {
     evidence,

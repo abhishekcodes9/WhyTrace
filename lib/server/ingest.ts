@@ -4,12 +4,15 @@ import type {
   IngestionEvent,
   RepositorySummary,
 } from "@/lib/types";
-import { cleanText } from "@/lib/utils";
+import { asNumber, cleanText } from "@/lib/utils";
 import { GitHubClient, GitHubError, mapLimit, type GitHubComment, type GitHubCommitDetail, type GitHubDiscussion, type GitHubDoc, type GitHubIssue, type GitHubPrFile, type GitHubPull, type GitHubRepoMeta } from "./github";
-import { canonicalRepoId, markIngestionComplete, nodeId, readCounts, repositoryUrl, saveRepository } from "./repository";
+import { canonicalRepoId, markIngestionComplete, nodeId, readCounts, readRelationshipCounts, repositoryUrl, saveRepository } from "./repository";
+import { aggregateDiscussComments, formatRelationshipDiagnostics, planRelationships, type RelRow, type RelationshipGroup, type RelationshipPlan } from "./ingest-relationships";
+import { extractFilePaths, extractReferences } from "./text-extraction";
 import { serverEnv } from "./env";
 import { ensureSchema, readQuery, writeTransaction } from "./neo4j";
 import type { ManagedTransaction } from "neo4j-driver";
+import { randomUUID } from "node:crypto";
 
 export type IngestProgress = (event: IngestionEvent) => void;
 
@@ -27,12 +30,6 @@ interface IngestLimits {
 interface NodeRow {
   id: string;
   props: Record<string, unknown>;
-}
-
-interface RelRow {
-  from: string;
-  to: string;
-  props?: Record<string, unknown>;
 }
 
 interface PullBundle {
@@ -126,23 +123,6 @@ function docScore(entry: { path: string; size: number }): number {
   if (lower.startsWith("docs/") || lower.includes("/docs/")) return 70;
   if (/(^|\/)(changelog|contributing|maintainers|security|governance)(\.[a-z]+)?$/i.test(lower)) return 55;
   return 10;
-}
-
-function extractReferences(text: string): Set<number> {
-  const numbers = new Set<number>();
-  const patterns = [/(?:^|[^\w&])#(\d{1,7})\b/g, /\/issues\/(\d{1,7})\b/g, /\/pull\/(\d{1,7})\b/g];
-  for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) {
-      const value = Number(match[1]);
-      if (Number.isInteger(value) && value > 0) numbers.add(value);
-    }
-  }
-  return numbers;
-}
-
-function extractFilePaths(text: string): string[] {
-  const matches = text.match(/[\w@./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rb|java|kt|rs|c|cc|cpp|h|cs|php|swift|scala|sql|yml|yaml|json|toml|md|tf)\b/g) ?? [];
-  return [...new Set(matches)].filter((path) => path.length < 300);
 }
 
 function parseDecision(doc: GitHubDoc, repoId: string): DecisionRecord | null {
@@ -261,41 +241,39 @@ async function writeNodes(tx: ManagedTransaction, label: string, rows: NodeRow[]
   }
 }
 
-async function writeRepoContains(tx: ManagedTransaction, repoId: string, label: string, ids: string[]): Promise<void> {
-  if (!ids.length) return;
-  for (let index = 0; index < ids.length; index += 500) {
-    await tx.run(
-      `UNWIND $ids AS id
-       MATCH (r:Repository {id: $repoId})
-       MATCH (n:${label} {id: id})
-       MERGE (r)-[:CONTAINS]->(n)`,
-      { repoId, ids: ids.slice(index, index + 500) },
-    );
-  }
-}
-
 async function writeRels(
   tx: ManagedTransaction,
   fromLabel: string,
   toLabel: string,
   type: string,
   rows: RelRow[],
+  runId: string,
 ): Promise<void> {
   if (!rows.length) return;
   if (!REL_TYPES.has(type)) throw new Error(`Unsupported relationship type: ${type}`);
   for (let index = 0; index < rows.length; index += 400) {
-    await tx.run(
+    const chunk = rows.slice(index, index + 400);
+    const result = await tx.run(
       `UNWIND $rows AS row
        MATCH (a:${fromLabel} {id: row.from})
        MATCH (b:${toLabel} {id: row.to})
        MERGE (a)-[r:${type}]->(b)
-       SET r += row.props`,
-      { rows: rows.slice(index, index + 400).map((row) => ({ from: row.from, to: row.to, props: row.props ?? {} })) },
+       SET r += row.props, r.lastIngestedRunId = $runId
+       RETURN count(r) AS linked`,
+      { rows: chunk.map((row) => ({ from: row.from, to: row.to, props: row.props ?? {} })), runId },
     );
+    const linked = asNumber(result.records[0]?.get("linked"));
+    if (linked !== chunk.length) {
+      const sample = chunk.slice(0, 3).map((row) => `${row.from} -> ${row.to}`).join(" | ");
+      throw new Error(
+        `Neo4j relationship write skipped rows for ${type} ${fromLabel}->${toLabel}: ` +
+        `expected ${chunk.length}, linked ${linked}; samples ${sample || "none"}.`,
+      );
+    }
   }
 }
 
-async function writeGraph(graph: IngestGraph, repoId: string, counts: IngestionCounts): Promise<void> {
+async function writeGraph(graph: IngestGraph, repoId: string, counts: IngestionCounts, runId: string): Promise<RelationshipPlan> {
   const { repo, commits, pulls, issues, discussions, docs } = graph;
   const fullName = repo.fullName;
   const branch = graph.branch;
@@ -572,20 +550,28 @@ async function writeGraph(graph: IngestGraph, repoId: string, counts: IngestionC
       to: nodeId(repoId, "discussion", discussion.number),
     }));
 
-  const discussesEdges: RelRow[] = [];
-  const addDiscusses = (comments: GitHubComment[], kind: string, number: number) => {
-    for (const comment of comments) {
-      if (!comment.authorLogin) continue;
-      discussesEdges.push({
-        from: nodeId(repoId, "developer", comment.authorLogin),
-        to: nodeId(repoId, kind, number),
-        props: { via: "comment", commentUrl: comment.url, createdAt: comment.createdAt },
-      });
-    }
+  const discussesPullEdges: RelRow[] = [];
+  const discussesIssueEdges: RelRow[] = [];
+  const discussesDiscussionEdges: RelRow[] = [];
+  let duplicateCommentInputs = 0;
+  const addDiscusses = (comments: GitHubComment[], kind: string, number: number, target: RelRow[]) => {
+    const aggregated = aggregateDiscussComments(
+      repoId,
+      kind,
+      number,
+      comments.map((comment) => ({
+        id: comment.id,
+        authorLogin: comment.authorLogin,
+        url: comment.url,
+        createdAt: comment.createdAt,
+      })),
+    );
+    duplicateCommentInputs += aggregated.duplicateInputRows;
+    target.push(...aggregated.rows);
   };
-  for (const bundle of pulls) addDiscusses(bundle.comments, "pull", bundle.pull.number);
-  for (const bundle of issues) addDiscusses(bundle.comments, "issue", bundle.issue.number);
-  for (const discussion of discussions) addDiscusses(discussion.comments, "discussion", discussion.number);
+  for (const bundle of pulls) addDiscusses(bundle.comments, "pull", bundle.pull.number, discussesPullEdges);
+  for (const bundle of issues) addDiscusses(bundle.comments, "issue", bundle.issue.number, discussesIssueEdges);
+  for (const discussion of discussions) addDiscusses(discussion.comments, "discussion", discussion.number, discussesDiscussionEdges);
 
   const pullContainsEdges: RelRow[] = [];
   for (const bundle of pulls) {
@@ -668,7 +654,48 @@ async function writeGraph(graph: IngestGraph, repoId: string, counts: IngestionC
     }
   }
 
-  let totalRelationships = 0;
+  const nodeIdsByLabel = new Map<string, Set<string>>();
+  nodeIdsByLabel.set("Repository", new Set([repoId]));
+  for (const [group, label] of Object.entries(NODE_LABELS) as [NodeGroup, string][]) {
+    nodeIdsByLabel.set(label, new Set(nodeRows[group].map((row) => row.id)));
+  }
+
+  const containsGroups: RelationshipGroup[] = (Object.entries(NODE_LABELS) as [NodeGroup, string][]).map(([group, label]) => ({
+    type: "CONTAINS",
+    fromLabel: "Repository",
+    toLabel: label,
+    rows: nodeRows[group].map((row) => ({ from: repoId, to: row.id })),
+  }));
+
+  const relationshipGroups: RelationshipGroup[] = [
+    ...containsGroups,
+    { type: "MODIFIES", fromLabel: "Commit", toLabel: "File", rows: commitFileEdges },
+    { type: "AFFECTS", fromLabel: "PullRequest", toLabel: "File", rows: pullFileEdges },
+    { type: "AUTHORED", fromLabel: "Developer", toLabel: "Commit", rows: authoredEdges },
+    { type: "OPENED", fromLabel: "Developer", toLabel: "PullRequest", rows: openedPullEdges },
+    { type: "OPENED", fromLabel: "Developer", toLabel: "Issue", rows: openedIssueEdges },
+    { type: "OPENED", fromLabel: "Developer", toLabel: "Discussion", rows: openedDiscussionEdges },
+    { type: "CONTAINS", fromLabel: "PullRequest", toLabel: "Commit", rows: pullContainsEdges },
+    { type: "DISCUSSES", fromLabel: "Developer", toLabel: "PullRequest", rows: discussesPullEdges },
+    { type: "DISCUSSES", fromLabel: "Developer", toLabel: "Issue", rows: discussesIssueEdges },
+    { type: "DISCUSSES", fromLabel: "Developer", toLabel: "Discussion", rows: discussesDiscussionEdges },
+    { type: "DOCUMENTS", fromLabel: "DesignDocument", toLabel: "Decision", rows: documentDecisionEdges },
+    { type: "SUPERSEDES", fromLabel: "Decision", toLabel: "Decision", rows: supersedesEdges },
+    { type: "REFERENCES", fromLabel: "Incident", toLabel: "Issue", rows: incidentEdges },
+    { type: "AFFECTS", fromLabel: "Incident", toLabel: "File", rows: incidentAffects },
+    ...[...refsToIssuesByLabel].map(([label, rows]) => ({ type: "REFERENCES", fromLabel: label, toLabel: "Issue", rows })),
+    ...[...refsToPullsByLabel].map(([label, rows]) => ({ type: "REFERENCES", fromLabel: label, toLabel: "PullRequest", rows })),
+  ];
+
+  // Expected counts use the exact same endpoint-pair uniqueness as the MERGE
+  // writer. Missing endpoints are rejected before any graph write starts.
+  const relationshipPlan = planRelationships(relationshipGroups, nodeIdsByLabel, duplicateCommentInputs);
+  if (relationshipPlan.missingEndpoints.length) {
+    throw new Error(
+      `Neo4j relationship plan rejected before writing: ${formatRelationshipDiagnostics(relationshipPlan, relationshipPlan.expectedByType)}.`,
+    );
+  }
+
   await writeTransaction(async (tx) => {
     await writeNodes(tx, "File", nodeRows.files);
     await writeNodes(tx, "Commit", nodeRows.commits);
@@ -680,51 +707,13 @@ async function writeGraph(graph: IngestGraph, repoId: string, counts: IngestionC
     await writeNodes(tx, "Decision", nodeRows.decisions);
     await writeNodes(tx, "Incident", nodeRows.incidents);
 
-    for (const [group, label] of Object.entries(NODE_LABELS) as [NodeGroup, string][]) {
-      await writeRepoContains(tx, repoId, label, nodeRows[group].map((row) => row.id));
+    for (const group of relationshipPlan.groups) {
+      await writeRels(tx, group.fromLabel, group.toLabel, group.type, group.rows, runId);
     }
-
-    await writeRels(tx, "Commit", "File", "MODIFIES", commitFileEdges);
-    await writeRels(tx, "PullRequest", "File", "AFFECTS", pullFileEdges);
-    await writeRels(tx, "Developer", "Commit", "AUTHORED", authoredEdges);
-    await writeRels(tx, "Developer", "PullRequest", "OPENED", openedPullEdges);
-    await writeRels(tx, "Developer", "Issue", "OPENED", openedIssueEdges);
-    await writeRels(tx, "Developer", "Discussion", "OPENED", openedDiscussionEdges);
-    await writeRels(tx, "PullRequest", "Commit", "CONTAINS", pullContainsEdges);
-    await writeRels(tx, "Developer", "PullRequest", "DISCUSSES", discussesEdges.filter((row) => row.to.includes(":pull:")));
-    await writeRels(tx, "Developer", "Issue", "DISCUSSES", discussesEdges.filter((row) => row.to.includes(":issue:")));
-    await writeRels(tx, "Developer", "Discussion", "DISCUSSES", discussesEdges.filter((row) => row.to.includes(":discussion:")));
-    await writeRels(tx, "DesignDocument", "Decision", "DOCUMENTS", documentDecisionEdges);
-    await writeRels(tx, "Decision", "Decision", "SUPERSEDES", supersedesEdges);
-    await writeRels(tx, "Incident", "Issue", "REFERENCES", incidentEdges);
-    await writeRels(tx, "Incident", "File", "AFFECTS", incidentAffects);
-
-    for (const [label, rows] of refsToIssuesByLabel) {
-      await writeRels(tx, label, "Issue", "REFERENCES", rows);
-    }
-    for (const [label, rows] of refsToPullsByLabel) {
-      await writeRels(tx, label, "PullRequest", "REFERENCES", rows);
-    }
-
-    totalRelationships =
-      Object.values(nodeRows).reduce((sum, rows) => sum + rows.length, 0) +
-      commitFileEdges.length +
-      pullFileEdges.length +
-      authoredEdges.length +
-      openedPullEdges.length +
-      openedIssueEdges.length +
-      openedDiscussionEdges.length +
-      discussesEdges.length +
-      pullContainsEdges.length +
-      documentDecisionEdges.length +
-      supersedesEdges.length +
-      incidentEdges.length +
-      incidentAffects.length +
-      [...refsToIssuesByLabel.values()].reduce((sum, rows) => sum + rows.length, 0) +
-      [...refsToPullsByLabel.values()].reduce((sum, rows) => sum + rows.length, 0);
   });
 
-  counts.relationships = totalRelationships;
+  counts.relationships = relationshipPlan.expectedTotal;
+  return relationshipPlan;
 }
 
 /**
@@ -784,7 +773,7 @@ export async function ingestRepository(options: {
   branch?: string;
   onProgress?: IngestProgress;
   knownRepo?: GitHubRepoMeta;
-}): Promise<{ repository: RepositorySummary; graph: IngestGraph; counts: IngestionCounts; warnings: string[]; durationMs: number }> {
+}): Promise<{ repository: RepositorySummary; graph: IngestGraph; counts: IngestionCounts; warnings: string[]; durationMs: number; relationshipAudit: RelationshipPlan; ingestionRunId: string }> {
   const started = Date.now();
   const progress = options.onProgress ?? (() => undefined);
   const client = new GitHubClient();
@@ -793,6 +782,7 @@ export async function ingestRepository(options: {
   const repo = options.knownRepo ?? (await client.getRepo(options.owner, options.name));
   const branch = options.branch?.trim() || repo.defaultBranch;
   const repoId = canonicalRepoId(repo.fullName);
+  const ingestionRunId = randomUUID();
   if (!repo.defaultBranch) throw new GitHubError("EMPTY_REPOSITORY", "This repository has no default branch yet.");
 
   progress({ type: "stage", stage: 1, stageName: "Repository", message: `Opening ${repo.fullName} on ${branch}` });
@@ -929,10 +919,17 @@ export async function ingestRepository(options: {
 
   progress({ type: "stage", stage: 8, stageName: "Neo4j graph", message: "Writing repository-scoped nodes and relationships" });
   await ensureSchema();
-  await writeGraph(graph, repoId, counts);
+  const relationshipPlan = await writeGraph(graph, repoId, counts, ingestionRunId);
 
-  progress({ type: "stage", stage: 9, stageName: "Read-back verification", message: "Reading the persisted graph back from Neo4j" });
+  progress({
+    type: "stage",
+    stage: 9,
+    stageName: "Read-back verification",
+    message: `Reading the persisted graph back from Neo4j (expected ${relationshipPlan.expectedTotal} unique relationships; ` +
+      `${relationshipPlan.duplicateInputRows} duplicate input rows collapsed)`,
+  });
   const persisted = await readCounts(repoId);
+  const persistedByType = await readRelationshipCounts(repoId, ingestionRunId);
   const coreExpected: Array<[keyof IngestionCounts, number, number]> = [
     ["commits", counts.commits, persisted.commits],
     ["pullRequests", counts.pullRequests, persisted.pulls],
@@ -953,9 +950,12 @@ export async function ingestRepository(options: {
     );
   }
 
-  if (persisted.relationships < counts.relationships) {
+  const missingRelationshipTypes = Object.entries(relationshipPlan.expectedByType)
+    .filter(([type, expected]) => (persistedByType[type] ?? 0) < expected);
+  if (missingRelationshipTypes.length || persisted.relationships < relationshipPlan.expectedTotal) {
     throw new Error(
-      `Neo4j read-back verification failed: ${persisted.relationships} outgoing relationships persisted, expected at least ${counts.relationships}.`,
+      `Neo4j relationship verification failed: ${persisted.relationships} unique relationships persisted; ` +
+      `${formatRelationshipDiagnostics(relationshipPlan, persistedByType)}.`,
     );
   }
 
@@ -992,7 +992,7 @@ export async function ingestRepository(options: {
     },
   };
 
-  return { repository, graph, counts, warnings, durationMs: Date.now() - started };
+  return { repository, graph, counts, warnings, durationMs: Date.now() - started, relationshipAudit: relationshipPlan, ingestionRunId };
 }
 
 export { changedFilesFromCommit };

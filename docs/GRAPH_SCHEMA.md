@@ -29,7 +29,7 @@ All nodes carry `id` (canonical, repository-scoped) and `repositoryId` (lowercas
 | `AFFECTS` | Incident → File | Issue body explicitly named an existing file path |
 | `AUTHORED` | Developer → Commit | Commit author login |
 | `OPENED` | Developer → PR/Issue/Discussion | Author of record |
-| `DISCUSSES` | Developer → PR/Issue/Discussion | Author of a retrieved comment; properties include `via: "comment"` |
+| `DISCUSSES` | Developer → PR/Issue/Discussion | One relationship per developer/target, even when that developer posted several comments. Properties aggregate `commentCount`, `commentUrls`, `firstCommentAt` and `lastCommentAt`; `via: "comment"` remains. |
 | `REFERENCES` | Commit/PR/Issue/Discussion/Document → Issue/PR | Explicit `#N`, `/issues/N`, `/pull/N` reference to an ingested record |
 | `REFERENCES` | Incident → Issue | Incident created from that labelled issue |
 | `DOCUMENTS` | DesignDocument → Decision | Decision extracted from that document |
@@ -49,6 +49,8 @@ ON EACH [title, body, message, path, rationale, excerpt]
 ```
 
 Queries always filter `node.repositoryId = $repoId` after full-text hits, preventing cross-repository mixing.
+
+Every relationship written by ingestion also records `lastIngestedRunId`. Read-back verification counts only edges carrying the current run ID, which proves this ingestion's writes without deleting older repository data that is no longer returned by GitHub.
 
 ## Temporal semantics
 

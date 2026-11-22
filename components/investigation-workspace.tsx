@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowRight, ChevronDown, Loader2, Network, Search, SlidersHorizontal, CircleAlert,
+  ArrowRight, ChevronDown, Network, Search, SlidersHorizontal, CircleAlert,
 } from "lucide-react";
 import { GithubLogo as Github } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,10 @@ import { Badge, StatusDot } from "@/components/ui/badge";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
 import { useRepo } from "@/components/repo-provider";
 import { cn } from "@/lib/utils";
-import type { InvestigationReport, InvestigationFocus } from "@/lib/types";
+import type { InvestigationEvent, InvestigationFocus, InvestigationReport } from "@/lib/types";
+import {
+  InvestigationProgressPanel, initialInvestigationStages, type InvestigationStageMap,
+} from "@/components/investigation-progress";
 
 const SUGGESTIONS = [
   "Why was this function introduced?",
@@ -22,15 +25,48 @@ const SUGGESTIONS = [
   "Was this decision later superseded?",
 ];
 
-const SCAN_MESSAGES = [
-  "Parsing the investigation question",
-  "Retrieving seed records from Neo4j",
-  "Traversing evidence relationships",
-  "Ranking records by source, directness and chronology",
-  "Validating citations against retrieved evidence",
-];
-
 type FocusType = "none" | "file" | "commit" | "pullRequest" | "issue";
+
+async function readError(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string; details?: string[] };
+    return body.error || body.details?.join(" ") || `Request failed (HTTP ${response.status}).`;
+  } catch {
+    return `Request failed (HTTP ${response.status}).`;
+  }
+}
+
+async function consumeInvestigationStream(
+  response: Response,
+  onEvent: (event: InvestigationEvent) => void,
+): Promise<void> {
+  if (!response.body) throw new Error("The investigation stream was empty.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      for (const line of rawEvent.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        try {
+          onEvent(JSON.parse(payload) as InvestigationEvent);
+        } catch {
+          // Ignore malformed fragments; real failures arrive as typed error events.
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+}
 
 export function InvestigationWorkspace() {
   const router = useRouter();
@@ -42,8 +78,10 @@ export function InvestigationWorkspace() {
   const [focusValue, setFocusValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scanIndex, setScanIndex] = useState(0);
+  const [stages, setStages] = useState<InvestigationStageMap>(initialInvestigationStages);
   const [elapsed, setElapsed] = useState(0);
+  const [indeterminate, setIndeterminate] = useState(false);
+  const [completedCase, setCompletedCase] = useState<{ id: string; caseNumber: string } | null>(null);
 
   useEffect(() => {
     const type = searchParams.get("focusType") as FocusType | null;
@@ -56,16 +94,17 @@ export function InvestigationWorkspace() {
   }, [searchParams]);
 
   useEffect(() => {
-    if (!loading) return;
-    setScanIndex(0);
+    if (!loading || completedCase) return;
     setElapsed(0);
-    const messageTimer = setInterval(() => setScanIndex((index) => (index + 1) % SCAN_MESSAGES.length), 1_900);
     const elapsedTimer = setInterval(() => setElapsed((value) => value + 1), 1_000);
-    return () => {
-      clearInterval(messageTimer);
-      clearInterval(elapsedTimer);
-    };
-  }, [loading]);
+    return () => clearInterval(elapsedTimer);
+  }, [loading, completedCase]);
+
+  useEffect(() => {
+    if (!completedCase) return;
+    const timer = window.setTimeout(() => router.push(`/report/${completedCase.id}`), 1_700);
+    return () => window.clearTimeout(timer);
+  }, [completedCase, router]);
 
   const counts = repository?.counts;
   const storageSummary = useMemo(() => {
@@ -100,7 +139,7 @@ export function InvestigationWorkspace() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (loading) return;
+    if (loading || completedCase) return;
     const trimmed = question.trim();
     if (trimmed.length < 8) {
       setError("Ask a more specific question — at least a short sentence.");
@@ -110,44 +149,125 @@ export function InvestigationWorkspace() {
       setError("Add a value for the investigation focus, or switch focus off.");
       return;
     }
+
+    const focus: InvestigationFocus | undefined =
+      focusType === "none"
+        ? undefined
+        : focusType === "file"
+          ? { type: "file", value: focusValue.trim() }
+          : focusType === "commit"
+            ? { type: "commit", value: focusValue.trim() }
+            : focusType === "pullRequest"
+              ? { type: "pullRequest", value: focusValue.trim() }
+              : { type: "issue", value: focusValue.trim() };
+    const payload = {
+      repoFullName: repository.fullName,
+      branch: repository.branch,
+      question: trimmed,
+      ...(focus ? { focus } : {}),
+    };
+
     setLoading(true);
     setError(null);
-    try {
-      const focus: InvestigationFocus | undefined =
-        focusType === "none"
-          ? undefined
-          : focusType === "file"
-            ? { type: "file", value: focusValue.trim() }
-            : focusType === "commit"
-              ? { type: "commit", value: focusValue.trim() }
-              : focusType === "pullRequest"
-                ? { type: "pullRequest", value: focusValue.trim() }
-                : { type: "issue", value: focusValue.trim() };
-      const response = await fetch("/api/investigate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoFullName: repository.fullName,
-          branch: repository.branch,
-          question: trimmed,
-          ...(focus ? { focus } : {}),
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-      const body = (await response.json()) as { report?: InvestigationReport; error?: string; details?: string[] };
-      if (!response.ok || !body.report) {
-        throw new Error(body.error || body.details?.join(" ") || "Investigation failed.");
-      }
+    setStages(initialInvestigationStages());
+    setElapsed(0);
+    setIndeterminate(false);
+    setCompletedCase(null);
+
+    const finish = (report: InvestigationReport) => {
       try {
-        window.sessionStorage.setItem("whytrace:lastCase", body.report.id);
+        window.sessionStorage.setItem("whytrace:lastCase", report.id);
       } catch {
         // Navigation still works if session storage is unavailable.
       }
-      router.push(`/report/${body.report.id}`);
+      setCompletedCase({ id: report.id, caseNumber: report.caseNumber });
+    };
+
+    const loadLegacyReport = async () => {
+      setIndeterminate(true);
+      const response = await fetch("/api/investigate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(150_000),
+      });
+      if (!response.ok) throw new Error(await readError(response));
+      const body = (await response.json()) as { report?: InvestigationReport; error?: string; details?: string[] };
+      if (!body.report) throw new Error(body.error || body.details?.join(" ") || "Investigation failed.");
+      finish(body.report);
+    };
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch("/api/investigate/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(150_000),
+        });
+      } catch {
+        throw new Error("The investigation progress stream could not be reached. No result was assumed.");
+      }
+
+      if (response.status === 404 || response.status === 405) {
+        await loadLegacyReport();
+        return;
+      }
+      if (!response.ok) throw new Error(await readError(response));
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/event-stream")) {
+        await loadLegacyReport();
+        return;
+      }
+
+      let completedReport: InvestigationReport | null = null;
+      let streamError: string | null = null;
+      await consumeInvestigationStream(response, (streamEvent) => {
+        if (streamEvent.type === "stage") {
+          setStages((current) => ({
+            ...current,
+            [streamEvent.stage]: {
+              status: streamEvent.status,
+              message: streamEvent.message,
+              detail: streamEvent.detail,
+              counts: streamEvent.counts,
+            },
+          }));
+        } else if (streamEvent.type === "complete") {
+          completedReport = streamEvent.report;
+          finish(streamEvent.report);
+        } else if (streamEvent.type === "error") {
+          streamError = streamEvent.message;
+          if (streamEvent.stage) {
+            setStages((current) => ({
+              ...current,
+              [streamEvent.stage as keyof InvestigationStageMap]: {
+                ...current[streamEvent.stage as keyof InvestigationStageMap],
+                status: "failed",
+                message: streamEvent.message,
+              },
+            }));
+          }
+        }
+      });
+
+      if (streamError) throw new Error(streamError);
+      if (!completedReport) {
+        throw new Error("The investigation progress stream ended before a case file was completed. No result was assumed.");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Investigation failed.");
+      const timedOut = err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
+      setError(timedOut
+        ? "The investigation took longer than 150 seconds and was not assumed complete. Check the case files before retrying."
+        : err instanceof Error ? err.message : "Investigation failed.");
+      setIndeterminate(false);
       setLoading(false);
     }
+  };
+
+  const openCompletedCase = () => {
+    if (completedCase) router.push(`/report/${completedCase.id}`);
   };
 
   return (
@@ -249,22 +369,14 @@ export function InvestigationWorkspace() {
             </div>
           </form>
 
-          {loading ? (
-            <div className="scanline rounded-md border border-primary/30 bg-surface-container-low p-5" role="status" aria-live="polite">
-              <div className="flex items-center gap-3">
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                <p className="font-body text-body-md text-on-surface">{SCAN_MESSAGES[scanIndex]}…</p>
-                <span className="ml-auto font-mono text-mono-sm text-on-surface-variant">{elapsed}s</span>
-              </div>
-              <div className="mt-3 grid grid-cols-5 gap-1" aria-hidden="true">
-                {SCAN_MESSAGES.map((message, index) => (
-                  <span key={message} className={cn("h-1 rounded-full transition-colors duration-500", index <= scanIndex ? "bg-primary/80" : "bg-surface-container-highest")} />
-                ))}
-              </div>
-              <p className="mt-3 font-mono text-mono-sm text-on-surface-variant">
-                Querying the persisted graph, then validating every citation. This can take up to a minute.
-              </p>
-            </div>
+          {loading || completedCase ? (
+            <InvestigationProgressPanel
+              stages={stages}
+              elapsed={elapsed}
+              indeterminate={indeterminate}
+              completedCase={completedCase}
+              onOpenCase={openCompletedCase}
+            />
           ) : null}
 
           {error ? (

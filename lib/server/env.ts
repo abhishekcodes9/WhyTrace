@@ -15,7 +15,7 @@ export const serverEnv = {
   neo4jDatabase: process.env.NEO4J_DATABASE?.trim() || "neo4j",
   githubToken: process.env.GITHUB_TOKEN?.trim() ?? "",
   geminiApiKey: process.env.GEMINI_API_KEY?.trim() ?? "",
-  geminiModel: process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash",
+  geminiModel: process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash",
   limits: {
     maxCommits: intEnv("WHYTRACE_MAX_COMMITS", 40, 1, 150),
     maxCommitDetails: intEnv("WHYTRACE_MAX_COMMIT_DETAILS", 18, 1, 100),

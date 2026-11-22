@@ -409,12 +409,12 @@ body {
   word-break: break-word;
 }
 .diff-add {
-  color: #2f5a3c;
-  background: rgba(62, 107, 76, 0.1);
+  color: #a6cfb0;
+  background: rgba(62, 107, 76, 0.18);
 }
 .diff-del {
-  color: #7f2e28;
-  background: rgba(142, 56, 48, 0.09);
+  color: #e6a8a1;
+  background: rgba(142, 56, 48, 0.18);
 }
 
 /* ── React Flow theme ───────────────────────────────────────── */
@@ -498,5 +498,20 @@ body {
 @media print {
   body {
     background: #fff;
+  }
+  .report-dossier {
+    background: #fff !important;
+    color: #17120f !important;
+    border-color: #999 !important;
+    box-shadow: none !important;
+  }
+  .report-dossier * {
+    color: #17120f !important;
+    background-color: transparent !important;
+    border-color: #bbb !important;
+    box-shadow: none !important;
+  }
+  .report-chrome {
+    display: none !important;
   }
 }

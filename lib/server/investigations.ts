@@ -84,6 +84,7 @@ export async function saveInvestigation(report: InvestigationReport, sessionId: 
     repoFullName: report.repoFullName,
     question: report.question,
     status: report.status,
+    synthesisStatus: report.synthesis.status,
     createdAt: report.createdAt,
     confidence: report.evidenceQuality.confidence,
     evidenceCount: report.evidence.length,
@@ -107,8 +108,8 @@ export async function listInvestigations(sessionId: string, limit = 60): Promise
   const rows = await readQuery<Record<string, unknown>>(
     `MATCH (i:Investigation {sessionId: $sessionId})
      RETURN i.id AS id, i.repoFullName AS repoFullName, i.question AS question, i.status AS status,
-            i.createdAt AS createdAt, i.confidence AS confidence, i.evidenceCount AS evidenceCount,
-            i.summary AS summary
+            i.synthesisStatus AS synthesisStatus, i.createdAt AS createdAt, i.confidence AS confidence,
+            i.evidenceCount AS evidenceCount, i.summary AS summary
      ORDER BY i.createdAt DESC LIMIT $limit`,
     { sessionId, limit: neo4jInt(Math.max(1, Math.floor(limit))) },
   );
@@ -117,6 +118,9 @@ export async function listInvestigations(sessionId: string, limit = 60): Promise
     repoFullName: asString(row.repoFullName),
     question: asString(row.question),
     status: (asString(row.status) as CaseFileSummary["status"]) || "insufficient",
+    synthesisStatus: row.synthesisStatus === "completed" || row.synthesisStatus === "unavailable" || row.synthesisStatus === "not_configured"
+      ? row.synthesisStatus
+      : undefined,
     createdAt: asString(row.createdAt),
     confidence: asNumber(row.confidence),
     evidenceCount: asNumber(row.evidenceCount),

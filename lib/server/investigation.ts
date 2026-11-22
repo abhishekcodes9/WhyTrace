@@ -6,11 +6,13 @@ import type {
   GraphNode,
   InvestigationFocus,
   InvestigationReport,
-  InvestigationStatus,
+  InvestigationStageEvent,
+  InvestigationStageId,
   RepositorySummary,
   SupersessionStatus,
 } from "@/lib/types";
 import { confidenceLabel } from "@/lib/utils";
+import { classifyInvestigationStatus } from "@/lib/report-status";
 import { loadCommitFiles, loadPullFiles, retrieveEvidence } from "./graph-retrieval";
 import { ABSTENTION, synthesizeInvestigation } from "./gemini";
 import { getRepository } from "./repository";
@@ -253,7 +255,10 @@ function addRepositoryNode(graph: { nodes: GraphNode[]; edges: GraphEdge[] }, re
     },
   };
   if (!graph.nodes.some((node) => node.id === repoNode.id)) graph.nodes.unshift(repoNode);
-  const attached = graph.nodes.filter((node) => node.kind !== "repository").slice(0, 16);
+  // Only Commit nodes have a real persisted Repository-[:CONTAINS]->Commit edge.
+  // Files, documents and discussions are linked through their own evidence edges,
+  // so inventing Repository-[:CONTAINS]->File edges here would fabricate graph facts.
+  const attached = graph.nodes.filter((node) => node.kind === "commit").slice(0, 16);
   for (const node of attached) {
     if (!graph.edges.some((edge) => edge.source === repo.id && edge.target === node.id)) {
       graph.edges.push({
@@ -267,33 +272,204 @@ function addRepositoryNode(graph: { nodes: GraphNode[]; edges: GraphEdge[] }, re
   }
 }
 
+const STAGE_META: Record<InvestigationStageId, { number: number; name: string }> = {
+  case: { number: 1, name: "Opening the Case" },
+  graph: { number: 2, name: "Accessing the Evidence Graph" },
+  connections: { number: 3, name: "Tracing Evidence Connections" },
+  evidence: { number: 4, name: "Examining Historical Evidence" },
+  synthesis: { number: 5, name: "Preparing the Explanation" },
+  persistence: { number: 6, name: "Finalising the Case File" },
+};
+
 export async function runInvestigation(input: {
   repoFullName: string;
   branch?: string;
   question: string;
   focus?: InvestigationFocus;
   sessionId: string;
+  onProgress?: (event: InvestigationStageEvent) => void;
 }): Promise<InvestigationReport> {
-  const repo = await getRepository(input.repoFullName);
-  if (!repo) throw new RepositoryNotIngestedError(input.repoFullName);
-  if (repo.ingestionStatus === "running") throw new RepositoryIngestionInProgressError(repo.fullName);
-  if (!repo.counts || repo.counts.commits === 0) {
-    if (repo.ingestionStatus === "failed") throw new RepositoryIngestionFailedError(repo.fullName, repo.ingestionError ?? null);
-    throw new RepositoryEmptyError(input.repoFullName);
-  }
+  const reportProgress = input.onProgress ?? (() => undefined);
+  let currentStage: InvestigationStageId = "case";
+  const stage = (
+    id: InvestigationStageId,
+    status: InvestigationStageEvent["status"],
+    message: string,
+    counts?: InvestigationStageEvent["counts"],
+    detail?: string,
+  ) => {
+    currentStage = id;
+    reportProgress({
+      type: "stage",
+      stage: id,
+      stageNumber: STAGE_META[id].number,
+      stageName: STAGE_META[id].name,
+      status,
+      message,
+      counts,
+      detail,
+      at: new Date().toISOString(),
+    });
+  };
 
-  const branch = input.branch?.trim() || repo.branch || repo.defaultBranch;
-  const repoId = repo.id;
-  const retrieval = await retrieveEvidence(
-    repoId,
-    input.question,
-    input.focus && input.focus.type !== "question" ? { type: input.focus.type, value: input.focus.value } : undefined,
-  );
+  try {
+    stage("case", "active", "Validating the inquiry and opening the repository record.");
+    const repo = await getRepository(input.repoFullName);
+    if (!repo) throw new RepositoryNotIngestedError(input.repoFullName);
+    if (repo.ingestionStatus === "running") throw new RepositoryIngestionInProgressError(repo.fullName);
+    if (!repo.counts || repo.counts.commits === 0) {
+      if (repo.ingestionStatus === "failed") throw new RepositoryIngestionFailedError(repo.fullName, repo.ingestionError ?? null);
+      throw new RepositoryEmptyError(input.repoFullName);
+    }
+    stage(
+      "case", "completed",
+      `Opened ${repo.fullName} with ${repo.counts.commits.toLocaleString()} verified commits.`,
+      { records: repo.counts.commits },
+      `Branch ${repo.branch || repo.defaultBranch} · ingestion status ${repo.ingestionStatus ?? "ingested"}`,
+    );
 
-  const createdAt = new Date().toISOString();
-  const id = createInvestigationId();
+    const branch = input.branch?.trim() || repo.branch || repo.defaultBranch;
+    const repoId = repo.id;
+    stage("graph", "active", "Querying the persisted Neo4j evidence graph.");
+    const retrieval = await retrieveEvidence(
+      repoId,
+      input.question,
+      input.focus && input.focus.type !== "question" ? { type: input.focus.type, value: input.focus.value } : undefined,
+      {
+        onProgress: (event) => {
+          currentStage = event.stage;
+          reportProgress(event);
+        },
+      },
+    );
 
-  if (!retrieval.evidence.length) {
+    const createdAt = new Date().toISOString();
+    const id = createInvestigationId();
+
+    if (!retrieval.evidence.length) {
+      stage("synthesis", "skipped", "Synthesis was skipped because the evidence graph returned no records.");
+      const report: InvestigationReport = {
+        id,
+        caseNumber: caseNumber(id, createdAt),
+        repoFullName: repo.fullName,
+        branch,
+        question: input.question,
+        createdAt,
+        status: "insufficient",
+        summary: ABSTENTION,
+        documentedRationale: [],
+        technicalObservations: [],
+        inferences: [],
+        citations: [],
+        uncertainties: [
+          "Graph retrieval found no repository records matching this question.",
+          "Try naming a file, commit, pull request, issue, module or architectural decision explicitly.",
+        ],
+        supersessionStatus: "unknown",
+        supersessionNote: "No Decision record was retrieved.",
+        evidenceQuality: computeQuality({ evidence: [], keywords: retrieval.plan.keywords, documentedClaims: 0, abstained: true }),
+        evidence: [],
+        changedFiles: [],
+        developers: [],
+        timeline: [],
+        graph: retrieval.graph,
+        synthesis: {
+          provider: "gemini",
+          status: "unavailable",
+          model: null,
+          message: "Synthesis was not attempted because Neo4j graph retrieval returned no evidence.",
+        },
+        focus: input.focus ?? null,
+      };
+      addRepositoryNode(report.graph, repo);
+      stage("persistence", "active", "Persisting the abstention dossier and reading it back from Neo4j.");
+      await persistAndVerify(report, input.sessionId);
+      stage("persistence", "completed", `Case ${report.caseNumber} was persisted and verified.`);
+      return report;
+    }
+
+    const supersession = deriveSupersession(retrieval.evidence, retrieval.graph.edges, retrieval.graph.nodes);
+    const relationships = retrieval.graph.edges.map((edge) => ({ type: edge.type, source: edge.source, target: edge.target }));
+    stage(
+      "synthesis", "active",
+      `Examining ${retrieval.evidence.length} ranked records and checking whether synthesis is available.`,
+      { records: retrieval.evidence.length, relationships: relationships.length },
+    );
+    const synthesis = await synthesizeInvestigation({
+      question: input.question,
+      repoFullName: repo.fullName,
+      branch,
+      evidence: retrieval.evidence,
+      relationships,
+      supersessionHint: `${supersession.status.toUpperCase()} — ${supersession.note}`,
+    });
+
+    const claimsCount = synthesis.documentedRationale.length + synthesis.technicalObservations.length + synthesis.inferences.length;
+    const modelAbstained = synthesis.summary.trim() === ABSTENTION;
+    const status = classifyInvestigationStatus({
+      synthesisStatus: synthesis.synthesis.status,
+      claimsCount,
+      modelAbstained,
+      evidenceCount: retrieval.evidence.length,
+      directCount: retrieval.evidence.filter((item) => item.direct).length,
+      keywordCount: retrieval.plan.keywords.length,
+    });
+
+    if (synthesis.synthesis.status === "completed") {
+      stage(
+        "synthesis", "completed",
+        status === "answered"
+          ? `Gemini synthesis completed and ${synthesis.citations.length} citation${synthesis.citations.length === 1 ? " was" : "s were"} validated against retrieved records.`
+          : modelAbstained
+            ? "Gemini abstained because the retrieved evidence did not support a historical explanation."
+            : "Gemini returned an explanation, but the evidence-sufficiency guard rejected it.",
+        { records: retrieval.evidence.length, citations: status === "answered" ? synthesis.citations.length : 0 },
+        status === "answered" ? undefined : "No validated historical explanation was retained.",
+      );
+    } else {
+      stage(
+        "synthesis", "skipped",
+        synthesis.synthesis.status === "not_configured"
+          ? "Gemini is not configured; retrieved evidence is shown without AI interpretation."
+          : "Gemini was unavailable; retrieved evidence is shown without AI interpretation.",
+        { records: retrieval.evidence.length, citations: 0 },
+        synthesis.synthesis.message,
+      );
+    }
+
+    const abstained = status !== "answered";
+    const documentedRationale = status === "answered" ? synthesis.documentedRationale : [];
+    const technicalObservations = status === "answered" ? synthesis.technicalObservations : [];
+    const inferences = status === "answered" ? synthesis.inferences : [];
+    const summary = status === "answered" || status === "evidence_only" || status === "synthesis_not_configured"
+      ? synthesis.summary
+      : ABSTENTION;
+
+    const quality = computeQuality({
+      evidence: retrieval.evidence,
+      keywords: retrieval.plan.keywords,
+      documentedClaims: documentedRationale.length,
+      abstained,
+    });
+
+    const uncertainties = [...synthesis.uncertainties];
+    if (synthesis.rejectedClaimCount > 0) {
+      uncertainties.push(
+        `${synthesis.rejectedClaimCount} model claim${synthesis.rejectedClaimCount === 1 ? " was" : "s were"} discarded because they did not cite a retrieved evidence id.`,
+      );
+    }
+    if (status === "insufficient" && !modelAbstained && synthesis.synthesis.status === "completed") {
+      uncertainties.push("WHYTRACE applied an evidence-sufficiency guard and suppressed an unsupported synthesis.");
+    }
+    if (status === "insufficient") {
+      uncertainties.push("Evidence is listed for inspection, but no historical explanation is asserted.");
+    }
+    if (retrieval.warnings.length) uncertainties.push(...retrieval.warnings);
+
+    const changedFiles = await buildChangedFiles(repo.fullName, branch, retrieval.evidence);
+    const graph = retrieval.graph;
+    addRepositoryNode(graph, repo);
+
     const report: InvestigationReport = {
       id,
       caseNumber: caseNumber(id, createdAt),
@@ -301,114 +477,38 @@ export async function runInvestigation(input: {
       branch,
       question: input.question,
       createdAt,
-      status: "insufficient",
-      summary: ABSTENTION,
-      documentedRationale: [],
-      technicalObservations: [],
-      inferences: [],
-      citations: [],
-      uncertainties: [
-        "Graph retrieval found no repository records matching this question.",
-        "Try naming a file, commit, pull request, issue, module or architectural decision explicitly.",
-      ],
-      supersessionStatus: "unknown",
-      supersessionNote: "No Decision record was retrieved.",
-      evidenceQuality: computeQuality({ evidence: [], keywords: retrieval.plan.keywords, documentedClaims: 0, abstained: true }),
-      evidence: [],
-      changedFiles: [],
-      developers: [],
-      timeline: [],
-      graph: retrieval.graph,
-      synthesis: {
-        provider: "gemini",
-        status: "unavailable",
-        model: null,
-        message: "Synthesis was not attempted because Neo4j graph retrieval returned no evidence.",
-      },
+      status,
+      summary,
+      documentedRationale,
+      technicalObservations,
+      inferences,
+      citations: synthesis.citations,
+      uncertainties: [...new Set(uncertainties)].slice(0, 14),
+      supersessionStatus: supersession.status,
+      supersessionNote: supersession.note,
+      evidenceQuality: quality,
+      evidence: retrieval.evidence,
+      changedFiles,
+      developers: buildDevelopers(retrieval.evidence, graph.nodes),
+      timeline: buildTimeline(retrieval.evidence),
+      graph,
+      synthesis: synthesis.synthesis,
       focus: input.focus ?? null,
     };
-    addRepositoryNode(report.graph, repo);
+
+    stage("persistence", "active", "Persisting the dossier to Neo4j and verifying the read-back.");
     await persistAndVerify(report, input.sessionId);
-    return report;
-  }
-
-  const supersession = deriveSupersession(retrieval.evidence, retrieval.graph.edges, retrieval.graph.nodes);
-  const relationships = retrieval.graph.edges.map((edge) => ({ type: edge.type, source: edge.source, target: edge.target }));
-  const synthesis = await synthesizeInvestigation({
-    question: input.question,
-    repoFullName: repo.fullName,
-    branch,
-    evidence: retrieval.evidence,
-    relationships,
-    supersessionHint: `${supersession.status.toUpperCase()} — ${supersession.note}`,
-  });
-
-  const claimsCount = synthesis.documentedRationale.length + synthesis.technicalObservations.length + synthesis.inferences.length;
-  const modelAbstained = synthesis.summary.trim() === ABSTENTION;
-  const weakRetrieval =
-    retrieval.evidence.filter((item) => item.direct).length === 0 &&
-    retrieval.plan.keywords.length > 0 &&
-    retrieval.evidence.length < 3;
-  const abstained = modelAbstained || (!claimsCount && synthesis.synthesis.status === "completed") || weakRetrieval;
-
-  const documentedRationale = abstained ? [] : synthesis.documentedRationale;
-  const technicalObservations = abstained ? [] : synthesis.technicalObservations;
-  const inferences = abstained ? [] : synthesis.inferences;
-  const summary = abstained ? ABSTENTION : synthesis.summary;
-
-  const quality = computeQuality({
-    evidence: retrieval.evidence,
-    keywords: retrieval.plan.keywords,
-    documentedClaims: documentedRationale.length,
-    abstained,
-  });
-
-  const uncertainties = [...synthesis.uncertainties];
-  if (synthesis.rejectedClaimCount > 0) {
-    uncertainties.push(
-      `${synthesis.rejectedClaimCount} model claim${synthesis.rejectedClaimCount === 1 ? " was" : "s were"} discarded because they did not cite a retrieved evidence id.`,
+    stage(
+      "persistence", "completed",
+      `Case ${report.caseNumber} was persisted and read back from Neo4j.`,
+      { records: report.evidence.length, citations: report.citations.length },
     );
+    return report;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The investigation failed.";
+    stage(currentStage, "failed", message);
+    throw error;
   }
-  if (abstained && !modelAbstained) {
-    uncertainties.push("WHYTRACE applied an evidence-sufficiency guard and suppressed an unsupported synthesis.");
-  }
-  if (abstained) {
-    uncertainties.push("Evidence is listed for inspection, but no historical explanation is asserted.");
-  }
-  if (retrieval.warnings.length) uncertainties.push(...retrieval.warnings);
-
-  const changedFiles = await buildChangedFiles(repo.fullName, branch, retrieval.evidence);
-  const graph = retrieval.graph;
-  addRepositoryNode(graph, repo);
-
-  const report: InvestigationReport = {
-    id,
-    caseNumber: caseNumber(id, createdAt),
-    repoFullName: repo.fullName,
-    branch,
-    question: input.question,
-    createdAt,
-    status: (abstained ? "insufficient" : "answered") as InvestigationStatus,
-    summary,
-    documentedRationale,
-    technicalObservations,
-    inferences,
-    citations: synthesis.citations,
-    uncertainties: [...new Set(uncertainties)].slice(0, 14),
-    supersessionStatus: supersession.status,
-    supersessionNote: supersession.note,
-    evidenceQuality: quality,
-    evidence: retrieval.evidence,
-    changedFiles,
-    developers: buildDevelopers(retrieval.evidence, graph.nodes),
-    timeline: buildTimeline(retrieval.evidence),
-    graph,
-    synthesis: synthesis.synthesis,
-    focus: input.focus ?? null,
-  };
-
-  await persistAndVerify(report, input.sessionId);
-  return report;
 }
 
 async function persistAndVerify(report: InvestigationReport, sessionId: string): Promise<void> {

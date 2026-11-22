@@ -32,8 +32,8 @@ Client screens
 5. Fetch GitHub Discussions through GraphQL when a token is present.
 6. Fetch the recursive tree (bounded), select README/ADR/architecture/docs by score, fetch markdown content.
 7. Deterministically extract ADR decisions and labelled incidents.
-8. Write all nodes and supported relationships to Neo4j in a transaction, using repository-scoped canonical IDs.
-9. Read counts back from Neo4j and compare with written core counts before emitting `complete`.
+8. Build a relationship plan keyed by `(source, type, target)`, collapse duplicate input rows (including multiple comments by one developer on one thread), reject missing endpoints before writing, then write all nodes and supported relationships to Neo4j in a transaction using repository-scoped canonical IDs.
+9. Read counts back from Neo4j and compare node counts plus this ingestion run's unique relationship counts by type before emitting `complete`. A repository is marked ingested only after this verification passes; missing endpoints and duplicate/skipped rows are reported with sample IDs, and stale edges from earlier runs are retained rather than deleted.
 
 The SSE stream emits only events that correspond to completed work. It is not a timed fake progress bar.
 

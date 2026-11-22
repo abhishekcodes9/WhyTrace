@@ -19,15 +19,12 @@ describe("deterministic evidence-grounded fallback", () => {
       supersessionHint: "ACTIVE — demo fixture",
     });
     expect(result.synthesis.status).toBe("not_configured");
-    expect(result.summary).not.toBe(ABSTENTION);
-    expect(result.documentedRationale.length).toBeGreaterThan(0);
-    const evidenceIds = new Set(DEMO_REPORT.evidence.map((item) => item.id));
-    for (const claim of result.documentedRationale) {
-      expect(claim.evidenceIds.every((id) => evidenceIds.has(id))).toBe(true);
-    }
-    for (const citation of result.citations) {
-      expect(evidenceIds.has(citation.evidenceId)).toBe(true);
-    }
+    expect(result.summary).toContain("Evidence retrieved — AI interpretation unavailable");
+    expect(result.documentedRationale).toEqual([]);
+    expect(result.technicalObservations).toEqual([]);
+    expect(result.inferences).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(result.uncertainties.join(" ")).toContain("source material only");
   });
 
   it("abstains when graph retrieval returns no evidence", async () => {

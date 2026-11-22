@@ -34,10 +34,9 @@ export function DossierOpen({ children, className }: { children: ReactNode; clas
   return (
     <motion.div
       className={className}
-      initial={reduced ? false : { opacity: 0, y: 16, rotateX: 1.2 }}
-      animate={{ opacity: 1, y: 0, rotateX: 0 }}
+      initial={reduced ? false : { opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
-      style={{ transformPerspective: 1200 }}
     >
       {children}
     </motion.div>

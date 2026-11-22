@@ -125,7 +125,56 @@ export interface SynthesisState {
   message: string;
 }
 
-export type InvestigationStatus = "answered" | "insufficient" | "failed";
+
+export type InvestigationStageId =
+  | "case"
+  | "graph"
+  | "connections"
+  | "evidence"
+  | "synthesis"
+  | "persistence";
+
+export type InvestigationStageStatus =
+  | "pending"
+  | "active"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export interface InvestigationStageEvent {
+  type: "stage";
+  stage: InvestigationStageId;
+  stageNumber: number;
+  stageName: string;
+  status: InvestigationStageStatus;
+  message: string;
+  detail?: string;
+  counts?: {
+    seeds?: number;
+    candidates?: number;
+    records?: number;
+    relationships?: number;
+    citations?: number;
+  };
+  at: string;
+}
+
+export type InvestigationEvent =
+  | InvestigationStageEvent
+  | { type: "complete"; report: InvestigationReport; durationMs: number }
+  | { type: "error"; message: string; code?: string; stage?: InvestigationStageId };
+
+/**
+ * Report classification. Only `answered` means a validated AI interpretation
+ * exists. `evidence_only` and `synthesis_not_configured` both mean real records
+ * were retrieved but no historical explanation was generated.
+ */
+export type InvestigationStatus =
+  | "answered"
+  | "evidence_only"
+  | "synthesis_not_configured"
+  | "insufficient"
+  | "failed";
 
 export interface InvestigationReport {
   id: string;
@@ -166,6 +215,7 @@ export interface CaseFileSummary {
   repoFullName: string;
   question: string;
   status: InvestigationStatus;
+  synthesisStatus?: SynthesisState["status"];
   createdAt: string;
   confidence: number;
   evidenceCount: number;

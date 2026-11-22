@@ -425,6 +425,7 @@ export const DEMO_CASE = {
   repoFullName: DEMO_REPORT.repoFullName,
   question: DEMO_REPORT.question,
   status: DEMO_REPORT.status,
+  synthesisStatus: DEMO_REPORT.synthesis.status,
   createdAt: DEMO_REPORT.createdAt,
   confidence: DEMO_REPORT.evidenceQuality.confidence,
   evidenceCount: DEMO_REPORT.evidence.length,
